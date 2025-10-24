@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
-import { mockUsers } from '../data/mock-users.data';
-import { User } from '../models/user.model';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { UserModel } from '../models/user.model';
 
-let mockUserDB = [...mockUsers];
+const JWT_SECRET = process.env.JWT_SECRET || 'mi_clave_super_segura';
+const JWT_EXPIRES_IN = '2h';
 
 /**
  * @swagger
@@ -36,137 +38,114 @@ let mockUserDB = [...mockUsers];
  * responses:
  * '201':
  * description: Usuario registrado con éxito.
- * content:
- * application/json:
- * schema:
- * type: object
- * properties:
- * message:
- * type: string
- * example: 'Usuario registrado con éxito. Confirme su email.'
  * '409':
  * description: El email ya está registrado.
  */
-export const register = (req: Request, res: Response) => {
+export const register = async (req: Request, res: Response) => {
+  try {
     const { email, password, name } = req.body;
-    
-    if (mockUserDB.some(user => user.email === email)) {
-        return res.status(409).json({ message: 'El correo electrónico ya está registrado.' });
+
+    if (!email || !password || !name) {
+      return res.status(400).json({ message: 'Todos los campos son obligatorios.' });
     }
 
-    const newUser: User = {
-        id: `user-${Math.random().toString(36).substr(2, 9)}`,
-        email,
-        password,
-        name,
-        role: 'user',
-        isEmailConfirmed: false,
-        address: {}
-    };
+    // Verificar si ya existe
+    const existingUser = await UserModel.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ message: 'El correo electrónico ya está registrado.' });
+    }
 
-    mockUserDB.push(newUser);
+    // Encriptar contraseña
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Crear usuario
+    const newUser = new UserModel({
+      email,
+      password: hashedPassword,
+      name,
+      role: 'user',
+      isEmailConfirmed: false,
+      address: {}
+    });
+
+    await newUser.save();
+
     res.status(201).json({ message: 'Usuario registrado con éxito. Confirme su email.' });
+  } catch (error) {
+    console.error('[REGISTER ERROR]', error);
+    res.status(500).json({ message: 'Error al registrar usuario.' });
+  }
 };
 
 /**
  * @swagger
  * /users/login:
  * post:
- * summary: Inicia sesión de un usuario y retorna tokens JWT
+ * summary: Inicia sesión y retorna tokens JWT
  * tags:
  * - Users
- * requestBody:
- * required: true
- * content:
- * application/json:
- * schema:
- * type: object
- * required:
- * - email
- * - password
- * properties:
- * email:
- * type: string
- * format: email
- * example: client@tuecommerce.com
- * password:
- * type: string
- * format: password
- * example: password1234
  * responses:
  * '200':
  * description: Login exitoso
- * content:
- * application/json:
- * schema:
- * type: object
- * properties:
- * message:
- * type: string
- * example: 'Login exitoso'
- * accessToken:
- * type: string
- * example: 'mock-access-token'
- * refreshToken:
- * type: string
- * example: 'mock-refresh-token'
  * '401':
  * description: Credenciales incorrectas
  */
-export const login = (req: Request, res: Response) => {
+export const login = async (req: Request, res: Response) => {
+  try {
     const { email, password } = req.body;
-    const user = mockUserDB.find(u => u.email === email && u.password === password);
-    
+
+    const user = await UserModel.findOne({ email });
     if (!user) {
-        return res.status(401).json({ message: 'Credenciales incorrectas.' });
+      return res.status(401).json({ message: 'Credenciales incorrectas.' });
     }
 
-    const accessToken = 'mock-access-token';
-    const refreshToken = 'mock-refresh-token';
+    // Validar contraseña
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(401).json({ message: 'Credenciales incorrectas.' });
+    }
+
+    // Generar token
+    const accessToken = jwt.sign(
+      { id: user._id, role: user.role },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
 
     res.status(200).json({
-        message: 'Login exitoso',
-        accessToken,
-        refreshToken
+      message: 'Login exitoso',
+      accessToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
     });
+  } catch (error) {
+    console.error('[LOGIN ERROR]', error);
+    res.status(500).json({ message: 'Error al iniciar sesión.' });
+  }
 };
 
 /**
  * @swagger
  * /users/{id}:
  * get:
- * summary: Obtiene el perfil de un usuario por su ID
+ * summary: Obtiene el perfil del usuario por ID
  * tags:
  * - Users
- * security:
- * - bearerAuth: []
- * parameters:
- * - in: path
- * name: id
- * required: true
- * schema:
- * type: string
- * description: El ID único del usuario
- * responses:
- * '200':
- * description: Perfil de usuario obtenido con éxito
- * content:
- * application/json:
- * schema:
- * $ref: '#/components/schemas/UserProfile'
- * '401':
- * description: No autorizado
- * '404':
- * description: Usuario no encontrado
  */
-export const getUserProfile = (req: Request, res: Response) => {
+export const getUserProfile = async (req: Request, res: Response) => {
+  try {
     const { id } = req.params;
-    const user = mockUserDB.find(u => u.id === id);
-
+    const user = await UserModel.findById(id).select('-password');
     if (!user) {
-        return res.status(404).json({ message: 'Usuario no encontrado.' });
+      return res.status(404).json({ message: 'Usuario no encontrado.' });
     }
-    
-    const { password, ...userWithoutPassword } = user;
-    res.status(200).json(userWithoutPassword);
+    res.status(200).json(user);
+  } catch (error) {
+    console.error('[PROFILE ERROR]', error);
+    res.status(500).json({ message: 'Error al obtener perfil.' });
+  }
 };

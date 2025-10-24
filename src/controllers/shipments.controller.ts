@@ -1,5 +1,15 @@
 import { Request, Response } from 'express';
-import { mockShipments } from '../data/mock-shipments.data';
+import { ShipmentModel } from '../models/shipments.model'; 
+import { OrderModel } from '../models/order.model';
+import { io } from '../server';
+
+type ShipmentStatus =
+  | 'PENDIENTE'
+  | 'PREPARANDO'
+  | 'EN_TRANSITO'
+  | 'EN_ENTREGA'
+  | 'ENTREGADO'
+  | 'CANCELADO';
 
 /**
  * @swagger
@@ -14,7 +24,7 @@ import { mockShipments } from '../data/mock-shipments.data';
  *         required: true
  *         schema:
  *           type: string
- *         description: El ID de la orden para la cual obtener el seguimiento
+ *         description: El ID de la orden
  *     responses:
  *       '200':
  *         description: Información de seguimiento obtenida con éxito
@@ -25,15 +35,20 @@ import { mockShipments } from '../data/mock-shipments.data';
  *       '404':
  *         description: Información de seguimiento no encontrada
  */
-export const getTrackingInfo = (req: Request, res: Response) => {
-  const { orderId } = req.params;
-  const shipment = mockShipments.find(s => s.orderId === orderId);
+export const getTrackingInfo = async (req: Request, res: Response) => {
+  try {
+    const { orderId } = req.params;
+    const shipment = await ShipmentModel.findOne({ orderId });
 
-  if (!shipment) {
-    return res.status(404).json({ message: 'Información de seguimiento no encontrada.' });
+    if (!shipment) {
+      return res.status(404).json({ message: 'Información de seguimiento no encontrada.' });
+    }
+
+    res.status(200).json(shipment);
+  } catch (error) {
+    console.error('[GET TRACKING ERROR]', error);
+    res.status(500).json({ message: 'Error al obtener información de seguimiento.' });
   }
-
-  res.status(200).json(shipment);
 };
 
 /**
@@ -68,24 +83,40 @@ export const getTrackingInfo = (req: Request, res: Response) => {
  *     responses:
  *       '200':
  *         description: Estado del envío actualizado con éxito
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 message:
- *                   type: string
- *                   example: Estado del envío actualizado con éxito.
+ *       '400':
+ *         description: Estado inválido
  *       '401':
  *         description: No autorizado
  *       '403':
- *         description: Acceso denegado (requiere rol de administrador)
+ *         description: Acceso denegado (solo admins)
  *       '404':
  *         description: Envío no encontrado
  */
-export const updateShipmentStatus = (req: Request, res: Response) => {
-  const { orderId } = req.params;
-  const { status }: { status: string } = req.body;
-  console.log(`Simulando actualización del estado de envío para la orden ${orderId} a ${status}.`);
-  res.status(200).json({ message: 'Estado del envío actualizado con éxito.' });
+export const updateShipmentStatus = async (req: Request, res: Response) => {
+  try {
+    const { orderId } = req.params;
+    const { status }: { status: ShipmentStatus } = req.body;
+
+    if (!status || !['PENDIENTE','PREPARANDO','EN_TRANSITO','EN_ENTREGA','ENTREGADO','CANCELADO'].includes(status)) {
+      return res.status(400).json({ message: 'Estado de envío inválido.' });
+    }
+
+    // Validar que el usuario sea admin
+    const user = req.user;
+    if (!user || user.role !== 'admin') return res.status(403).json({ message: 'Acceso denegado.' });
+
+    const shipment = await ShipmentModel.findOne({ orderId });
+    if (!shipment) return res.status(404).json({ message: 'Envío no encontrado.' });
+
+    shipment.status = status;
+    await shipment.save();
+
+    // Emitir notificación en tiempo real al usuario de la orden
+    io.to(`user_${shipment.userId}`).emit('shipmentUpdated', { orderId, status });
+
+    res.status(200).json({ message: 'Estado del envío actualizado con éxito.', shipment });
+  } catch (error) {
+    console.error('[UPDATE SHIPMENT ERROR]', error);
+    res.status(500).json({ message: 'Error al actualizar estado del envío.' });
+  }
 };

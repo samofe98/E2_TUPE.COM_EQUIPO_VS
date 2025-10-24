@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { mockProducts } from '../data/mock-products.data';
+import { ProductModel } from '../models/product.model';
 
 /**
  * @swagger
@@ -11,16 +11,15 @@ import { mockProducts } from '../data/mock-products.data';
  *     responses:
  *       '200':
  *         description: Lista de productos obtenida con éxito
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 $ref: '#/components/schemas/Product'
  */
-export const getAllProducts = (req: Request, res: Response) => {
-  const activeProducts = mockProducts.filter(p => p.status === 'activo' && p.stock > 0);
-  res.status(200).json(activeProducts);
+export const getAllProducts = async (req: Request, res: Response) => {
+  try {
+    const activeProducts = await ProductModel.find({ status: 'activo', stock: { $gt: 0 } });
+    res.status(200).json(activeProducts);
+  } catch (error) {
+    console.error('[GET PRODUCTS ERROR]', error);
+    res.status(500).json({ message: 'Error al obtener productos.' });
+  }
 };
 
 /**
@@ -36,26 +35,26 @@ export const getAllProducts = (req: Request, res: Response) => {
  *         required: true
  *         schema:
  *           type: string
- *         description: El ID del producto
  *     responses:
  *       '200':
  *         description: Detalles del producto obtenidos con éxito
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Product'
  *       '404':
  *         description: Producto no encontrado o no disponible
  */
-export const getProductById = (req: Request, res: Response) => {
-  const { id } = req.params;
-  const product = mockProducts.find(p => p.id === id);
+export const getProductById = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const product = await ProductModel.findById(id);
 
-  if (!product || product.status !== 'activo') {
-    return res.status(404).json({ message: 'Producto no encontrado o no disponible.' });
+    if (!product || product.status !== 'activo') {
+      return res.status(404).json({ message: 'Producto no encontrado o no disponible.' });
+    }
+
+    res.status(200).json(product);
+  } catch (error) {
+    console.error('[GET PRODUCT BY ID ERROR]', error);
+    res.status(500).json({ message: 'Error al obtener el producto.' });
   }
-
-  res.status(200).json(product);
 };
 
 /**
@@ -67,64 +66,84 @@ export const getProductById = (req: Request, res: Response) => {
  *       - Products
  *     security:
  *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - name
- *               - price
- *               - stock
- *               - description
- *               - status
- *               - sku
- *               - category
- *             properties:
- *               name:
- *                 type: string
- *                 example: Camiseta básica
- *               price:
- *                 type: number
- *                 example: 25000
- *               stock:
- *                 type: number
- *                 example: 100
- *               description:
- *                 type: string
- *                 example: Camiseta de algodón 100% color blanco
- *               status:
- *                 type: string
- *                 enum: [activo, descontinuado]
- *                 example: activo
- *               sku:
- *                 type: string
- *                 example: SKU-001
- *               images:
- *                 type: array
- *                 items:
- *                   type: string
- *                   example: https://mistienda.com/images/camiseta.jpg
- *               category:
- *                 type: string
- *                 example: Ropa
- *     responses:
- *       '201':
- *         description: Producto creado con éxito
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Product'
- *       '401':
- *         description: No autorizado
- *       '403':
- *         description: Acceso denegado (requiere rol de administrador)
  */
-export const createProduct = (req: Request, res: Response) => {
-  const newProduct = {
-    ...req.body,
-    id: `prod-${Math.random().toString(36).substr(2, 9)}`,
-  };
-  res.status(201).json(newProduct);
+export const createProduct = async (req: Request, res: Response) => {
+  try {
+    const { name, price, stock, description, sku, category, images } = req.body;
+
+    if (!name || !price || !stock || !sku || !category) {
+      return res.status(400).json({ message: 'Faltan campos obligatorios.' });
+    }
+
+    const existingProduct = await ProductModel.findOne({ sku });
+    if (existingProduct) {
+      return res.status(409).json({ message: 'Ya existe un producto con ese SKU.' });
+    }
+
+    const newProduct = new ProductModel({
+      name,
+      price,
+      stock,
+      description,
+      sku,
+      category,
+      images: images || [],
+      status: 'activo',
+    });
+
+    await newProduct.save();
+    res.status(201).json({ message: 'Producto creado con éxito.', product: newProduct });
+  } catch (error) {
+    console.error('[CREATE PRODUCT ERROR]', error);
+    res.status(500).json({ message: 'Error al crear producto.' });
+  }
+};
+
+/**
+ * @swagger
+ * /products/{id}:
+ *   put:
+ *     summary: Actualiza un producto existente (solo admin)
+ *     tags:
+ *       - Products
+ */
+export const updateProduct = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const updatedData = req.body;
+
+    const product = await ProductModel.findByIdAndUpdate(id, updatedData, { new: true });
+    if (!product) {
+      return res.status(404).json({ message: 'Producto no encontrado.' });
+    }
+
+    res.status(200).json({ message: 'Producto actualizado con éxito.', product });
+  } catch (error) {
+    console.error('[UPDATE PRODUCT ERROR]', error);
+    res.status(500).json({ message: 'Error al actualizar producto.' });
+  }
+};
+
+/**
+ * @swagger
+ * /products/{id}:
+ *   delete:
+ *     summary: Elimina un producto (solo admin)
+ *     tags:
+ *       - Products
+ */
+export const deleteProduct = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const deletedProduct = await ProductModel.findByIdAndDelete(id);
+
+    if (!deletedProduct) {
+      return res.status(404).json({ message: 'Producto no encontrado.' });
+    }
+
+    res.status(200).json({ message: 'Producto eliminado con éxito.' });
+  } catch (error) {
+    console.error('[DELETE PRODUCT ERROR]', error);
+    res.status(500).json({ message: 'Error al eliminar producto.' });
+  }
 };
